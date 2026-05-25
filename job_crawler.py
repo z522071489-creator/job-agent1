@@ -10,9 +10,10 @@ import re
 import json
 import time
 import requests
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from io import BytesIO
 from urllib.parse import quote
+from pathlib import Path
 
 from bs4 import BeautifulSoup
 import openpyxl
@@ -37,6 +38,7 @@ TITLE_EXCLUDE_KW = ["实习", "兼职", "劳务", "外包"]
 SCORE_THRESHOLD  = 50
 
 SOGOU_BASE = "https://weixin.sogou.com"
+STATE_FILE = "/tmp/job_crawler_state.json"
 
 HEADERS = {
     "User-Agent": (
@@ -58,10 +60,81 @@ def fix_url(url: str) -> str:
     return url
 
 
+def get_time_range() -> tuple[datetime, datetime]:
+    """
+    获取文章时间范围
+    第一次运行：获取7天前至今的文章
+    后续运行：获取前一天的文章
+    """
+    if Path(STATE_FILE).exists():
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+                last_run = datetime.fromisoformat(state.get("last_run", ""))
+                # 后续运行：采集从上次运行到现在的文章
+                return last_run, datetime.now()
+        except:
+            pass
+    
+    # 第一次运行：采集最近7天的文章
+    return datetime.now() - timedelta(days=7), datetime.now()
+
+
+def save_state():
+    """保存运行状态"""
+    with open(STATE_FILE, "w") as f:
+        json.dump({"last_run": datetime.now().isoformat()}, f)
+
+
+def parse_publish_date(date_str: str) -> datetime:
+    """解析公众号发布日期字符串"""
+    if not date_str:
+        return datetime.now()
+    
+    try:
+        # 处理 "1天前"、"2小时前" 等格式
+        if "天前" in date_str:
+            days = int(re.search(r"(\d+)天前", date_str).group(1))
+            return datetime.now() - timedelta(days=days)
+        elif "小时前" in date_str:
+            hours = int(re.search(r"(\d+)小时前", date_str).group(1))
+            return datetime.now() - timedelta(hours=hours)
+        elif "分钟前" in date_str:
+            minutes = int(re.search(r"(\d+)分钟前", date_str).group(1))
+            return datetime.now() - timedelta(minutes=minutes)
+        elif "昨天" in date_str:
+            return datetime.now() - timedelta(days=1)
+        # 尝试解析具体日期 "2026-05-24" 等
+        return datetime.fromisoformat(date_str.split()[0])
+    except:
+        return datetime.now()
+
+
+def is_article_valid_time(pub_date_str: str, start_time: datetime, end_time: datetime) -> bool:
+    """检查文章发布时间是否在范围内"""
+    pub_time = parse_publish_date(pub_date_str)
+    return start_time <= pub_time <= end_time
+
+
+def validate_url_accessible(url: str, timeout: int = 8) -> bool:
+    """验证URL是否可访问且有内容"""
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        resp = requests.head(url, headers=HEADERS, timeout=timeout, allow_redirects=True)
+        return resp.status_code == 200
+    except:
+        try:
+            resp = requests.get(url, headers=HEADERS, timeout=timeout)
+            return resp.status_code == 200
+        except:
+            return False
+
+
 # ============================================================
 # 1. 搜狗搜索获取文章列表
 # ============================================================
-def fetch_articles_sogou(account: str) -> list[dict]:
+def fetch_articles_sogou(account: str, start_time: datetime, end_time: datetime) -> list[dict]:
     articles = []
     seen_urls = set()
     queries = [f"{account} 招聘", f"{account} 岗位", f"{account} 公告"]
@@ -79,17 +152,30 @@ def fetch_articles_sogou(account: str) -> list[dict]:
                 src_el   = item.select_one(".account")
                 if not title_el:
                     continue
+                
                 source = src_el.get_text(strip=True) if src_el else ""
                 if account not in source and source:
                     continue
+                
+                pub_date_str = date_el.get_text(strip=True) if date_el else ""
+                # 验证时间范围
+                if not is_article_valid_time(pub_date_str, start_time, end_time):
+                    continue
+                
                 art_url = fix_url(title_el.get("href", ""))
                 if not art_url or art_url in seen_urls:
                     continue
+                
+                # 验证URL可访问性
+                if not validate_url_accessible(art_url):
+                    print(f"    ⚠️ URL无法访问: {art_url[:50]}...")
+                    continue
+                
                 seen_urls.add(art_url)
                 articles.append({
                     "title":    title_el.get_text(strip=True),
                     "url":      art_url,
-                    "pub_date": date_el.get_text(strip=True) if date_el else "",
+                    "pub_date": pub_date_str,
                     "source":   account,
                 })
                 if len(articles) >= 15:
@@ -123,21 +209,31 @@ def fetch_article_detail(url: str) -> tuple[str, list[str]]:
         return "", []
     try:
         resp = requests.get(url, headers=HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return "", []
+        
         soup = BeautifulSoup(resp.text, "lxml")
         body = soup.select_one("#js_content, .rich_media_content")
         if not body:
             text = soup.get_text()[:5000]
+            if len(text) < 100:  # 内容过少
+                return "", []
             return text, []
-        text = body.get_text(separator="\n", strip=True)[:6000]
+        
+        text = body.get_text(separator="\n", strip=True)[:8000]
+        if len(text) < 100:  # 正文内容过少
+            return "", []
+        
         imgs = []
         for img in body.select("img"):
             src = img.get("data-src") or img.get("src", "")
             if src and src.startswith("http") and "mmbiz" in src:
                 imgs.append(src)
-        print(f"    正文长度: {len(text)} 字，图片: {len(imgs)} 张")
+        
+        print(f"    ✓ 正文长度: {len(text)} 字，图片: {len(imgs)} 张")
         return text, imgs[:12]
     except Exception as e:
-        print(f"    抓取正文失败: {e}")
+        print(f"    ✗ 抓取正文失败: {e}")
         return "", []
 
 
@@ -164,57 +260,83 @@ def decode_qr_from_images(img_urls: list[str]) -> list[str]:
 
 
 # ============================================================
-# 5. Kimi API 语义筛选 + 打分
+# 5. Kimi API 语义筛选 + 打分（优化提示词）
 # ============================================================
-SYSTEM_PROMPT = """你是一个专业的招聘信息分析助手。
+SYSTEM_PROMPT = """你是一个严谨的招聘信息分析助手。你的任务是从招聘文章中提取真实存在的岗位信息，并进行严格评分。
 
-## 前置筛选条件（必须同时满足才保留）
-1. 招聘类型：必须是【社会招聘】（含校招+社招混合批次）
-   - 排除：仅限应届生/仅限校招/实习生/志愿者
-2. 学历要求：【高中及以上】均可保留
-   - 保留：高中、大专、本科、研究生、不限学历
-   - 排除：仅限硕士及以上的纯高学历岗位（除非同时招本科）
-3. 工作性质：正式用工
-   - 排除：实习、兼职、劳务派遣、外包、临时工
+## 严格的前置筛选条件（必须全部满足，否则excluded=true）
+1. **招聘类型必须是社会招聘或校招**
+   - 保留：社会招聘、校园招聘、社招+校招混合
+   - 排除：仅限应届生、实习生、志愿者、劳务派遣、外包、临时工
+   
+2. **学历要求必须是高中及以上（任何等级）**
+   - 保留：不限学历、高中、大专、本科、硕士、博士
+   - 排除：仅限硕士及以上的纯高学历要求（除非同时有本科岗位）
+   
+3. **工作性质必须是正式编制**
+   - 排除：实习、兼职、劳务、临时、外包
 
-## 地点筛选（优先保留，但不强制排除）
-优先保留太原、吕梁、山西全省的岗位。
-其他省份岗位可保留但打分较低。
+## 打分规则（总分从0开始，最高100分）
+- 工作地点在太原：+40分
+- 工作地点在吕梁/山西其他地市：+30分
+- 工作地点在其他省份：+5分
+- 非国企/事业单位但信息完整：+10分
+- 国企/央企/事业单位/大型上市公司：+20分
+- 有具体岗位名称（不是"若干"）：+10分
+- 有具体薪资范围：+10分
+- 有具体招聘截止日期：+10分
+- 含有排除关键词（仅限应届/实习/外包）：-100分（自动排除）
 
-## 打分规则（总分从0开始）
-- 工作地点为太原/吕梁/山西：+30分
-- 岗位类型匹配（销售/行政/交付/运营/管理）：+20分
-- 国企/央企/事业单位：+20分
-- 有明确薪资：+10分
-- 有明确截止日期：+10分
-- 含排除关键词（仅限应届/实习/外包/派遣）：-100分
+## 关键要求
+1. **岗位名称必须来自原文**，不要自行编造或推测
+   - 正确：文章明确写的"销售工程师"、"运维工程师"
+   - 错误：文章没提但你推测的岗位名称
+   
+2. **城市信息必须来自原文**，如果文章没明确说则填"待确认"
+   - 不要基于公众号名称猜测城市
+   - 例如公众号叫"太原招聘"但文章没说位置，则填"待确认"
+   
+3. **薪资、学历、截止日期必须来自原文**，没有就填空字符串
+   - 不要编造或推测薪资
+   
+4. **同一篇文章可提取多个岗位**，但每个岗位必须真实存在于文章中
+   
+5. **如果文章太短或内容无法判断**，返回空的jobs列表，不要编造
 
-## 重要规则
-- 如果文章正文为空或内容不足以判断，输出空的 jobs 列表，不要编造信息
-- 岗位名称必须来自文章原文，不要自行创造
-- 城市信息必须来自文章原文，不确定时填"待确认"
-- 薪资信息必须来自文章原文，没有就填空字符串
-- 同一篇文章可以提取多个岗位（如文章列举了多个岗位）
-
-## 输出格式（仅输出纯JSON，不含任何说明文字）
+## 输出格式（仅输出纯JSON，不含任何说明文字、不含markdown）
+```json
 {
   "jobs": [
     {
-      "job_name": "岗位名称（来自原文）",
-      "employer": "招聘单位名称",
-      "city": "工作城市（来自原文，不确定填待确认）",
-      "recruitment_type": "社会招聘/校招/混合",
-      "education_req": "学历要求（来自原文）",
-      "score": 75,
-      "salary_info": "薪资信息（来自原文，没有就空字符串）",
-      "deadline": "截止日期（来自原文，没有就空字符串）",
-      "summary": "80字以内岗位摘要（基于原文）",
-      "apply_link": "投递链接（来自原文，没有就空字符串）",
+      "job_name": "岗位名称（必须来自原文，真实存在）",
+      "employer": "招聘单位全称（来自原文）",
+      "city": "工作城市（来自原文，不确定填'待确认'）",
+      "recruitment_type": "社会招聘/校园招聘/混合招聘",
+      "education_req": "学历要求（来自原文，如'本科及以上'）",
+      "score": 65,
+      "salary_info": "薪资（来自原文，如'15-25k'，没有填空字符串）",
+      "deadline": "截止日期（来自原文，如'2026-06-30'，没有填空字符串）",
+      "summary": "80字以内的岗位职责摘要（必须基于原文，不编造）",
+      "apply_link": "投递链接（如有则来自原文，没有填空字符串）",
       "excluded": false,
-      "exclude_reason": "排除原因（不符合前置条件时填写）"
+      "exclude_reason": ""
     }
   ]
-}"""
+}
+```
+
+## 示例
+如果文章写："招聘销售工程师5人，要求本科及以上学历，薪资15-25k，请投递至xxx@qq.com"
+正确提取：
+- job_name: "销售工程师"
+- education_req: "本科及以上"
+- salary_info: "15-25k"
+- apply_link: "xxx@qq.com"
+
+## 严格审查
+- 发现任何排除关键词立即标记excluded=true，设score=-100
+- 不确定的信息宁可返回空jobs列表，也不要编造
+- 注意：求职者需要真实、准确的信息，你的责任是确保信息来自原文"""
 
 
 def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
@@ -223,20 +345,21 @@ def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
         return []
 
     content = article.get("content", "")
-    if len(content) < 50:
-        print("  ⚠️  正文太短，跳过AI分析")
+    if len(content) < 100:  # 提高最小内容要求
+        print("  ⚠️  正文太短（<100字），跳过AI分析")
         return []
 
-    qr_info = ("\n\n文章内二维码解码链接：\n" + "\n".join(qr_links)) if qr_links else ""
+    qr_info = ("\n\n【二维码链接】\n" + "\n".join(qr_links)) if qr_links else ""
     user_msg = (
+        f"【文章基本信息】\n"
         f"来源公众号：{article['source']}\n"
         f"文章标题：{article['title']}\n"
         f"发布日期：{article['pub_date']}\n"
         f"原文链接：{article['url']}\n\n"
-        f"文章正文：\n{content}"
+        f"【文章正文】\n{content}"
         f"{qr_info}\n\n"
-        f"请分析以上招聘文章，提取所有符合前置条件的岗位并打分。"
-        f"若正文内容不足以确认岗位信息，请返回空的jobs列表。"
+        f"请严格按照系统提示分析此招聘文章，仅提取真实存在的岗位。"
+        f"如果无法确认岗位信息来自原文，返回空jobs列表。"
     )
 
     try:
@@ -255,21 +378,42 @@ def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
             timeout=40,
         )
         raw = resp.json()["choices"][0]["message"]["content"]
-        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        
+        # 更严格的JSON提取
+        m = re.search(r"\{[\s\S]*\}", raw)
         if not m:
-            print(f"    Kimi返回无法解析: {raw[:100]}")
+            print(f"    ⚠️ Kimi返回无法解析: {raw[:200]}")
             return []
+        
         data = json.loads(m.group())
         jobs = data.get("jobs", [])
+        
+        # 验证提取的岗位
+        valid_jobs = []
         for job in jobs:
+            # 检查是否被排除
+            if job.get("excluded"):
+                print(f"    ❌ 排除: {job.get('job_name', '未命名')} - {job.get('exclude_reason', '')}")
+                continue
+            
+            # 检查关键字段是否填充
+            if not job.get("job_name") or job.get("job_name") == "":
+                print(f"    ❌ 岗位名称缺失，已过滤")
+                continue
+            
             job["source"]        = article["source"]
             job["article_url"]   = fix_url(article["url"])
             job["pub_date"]      = article["pub_date"]
             job["article_title"] = article["title"]
             job["qr_links"]      = qr_links
-        return jobs
+            valid_jobs.append(job)
+        
+        valid_cnt = len(valid_jobs)
+        print(f"   ✓ 提取: {len(jobs)} 个岗位，有效: {valid_cnt} 个")
+        return valid_jobs
+        
     except Exception as e:
-        print(f"    Kimi调用失败: {e}")
+        print(f"    ✗ Kimi调用失败: {e}")
         return []
 
 
@@ -394,42 +538,61 @@ def push_wechat(title: str, body: str):
 # ============================================================
 def main():
     start = datetime.now()
-    print(f"\n{'='*55}")
+    start_time, end_time = get_time_range()
+    
+    print(f"\n{'='*60}")
     print(f"🚀 春招岗位采集启动 {start.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"📅 时间范围: {start_time.strftime('%Y-%m-%d')} ~ {end_time.strftime('%Y-%m-%d')}")
     print(f"筛选条件：社会招聘 | 高中及以上学历 | 太原/吕梁/山西优先")
-    print(f"{'='*55}\n")
+    print(f"{'='*60}\n")
 
     # Step 1: 采集文章列表
     all_articles = []
     for account in ACCOUNTS:
         print(f"📡 采集: {account}")
-        arts = fetch_articles_sogou(account)
+        arts = fetch_articles_sogou(account, start_time, end_time)
         print(f"   找到 {len(arts)} 篇文章")
         all_articles.extend(arts)
+
+    if not all_articles:
+        print("\n⚠️ 未采集到任何文章，停止运行")
+        return
 
     # Step 2: 标题过滤
     filtered = filter_by_title(all_articles)
     print(f"\n🔍 标题过滤: {len(all_articles)} → {len(filtered)} 篇招聘文章\n")
 
+    if not filtered:
+        print("⚠️ 过滤后无文章，停止运行")
+        return
+
     # Step 3-5: 正文 + 二维码 + AI
     all_jobs = []
     for i, art in enumerate(filtered, 1):
-        print(f"[{i}/{len(filtered)}] {art['title'][:40]}...")
+        print(f"[{i}/{len(filtered)}] 处理: {art['title'][:50]}...")
         content, imgs = fetch_article_detail(art["url"])
+        
+        if not content:
+            print(f"   ⚠️ 无有效内容，跳过")
+            continue
+        
         art["content"] = content
         qr_links = decode_qr_from_images(imgs)
         if qr_links:
             print(f"   🔳 二维码: {len(qr_links)} 个")
+        
         jobs = analyze_with_kimi(art, qr_links)
-        valid_cnt = len([j for j in jobs if not j.get("excluded")])
-        print(f"   💼 提取: {len(jobs)} 个岗位，有效: {valid_cnt} 个")
         all_jobs.extend(jobs)
         time.sleep(2)
 
     # Step 6: 统计
     valid_jobs    = [j for j in all_jobs if not j.get("excluded") and j.get("score", 0) >= SCORE_THRESHOLD]
     priority_jobs = [j for j in valid_jobs if j.get("score", 0) >= 80]
-    print(f"\n📊 汇总: 文章{len(filtered)}篇 | 有效岗位{len(valid_jobs)}个 | 优先{len(priority_jobs)}个")
+    
+    print(f"\n📊 汇总统计")
+    print(f"  - 采集文章: {len(filtered)} 篇")
+    print(f"  - 有效岗位: {len(valid_jobs)} 个")
+    print(f"  - 优先投递: {len(priority_jobs)} 个")
 
     # Step 7: 生成Excel
     excel_path, dl_link = "", ""
@@ -475,6 +638,9 @@ def main():
         title=f"🎯 招聘速报 {date.today().strftime('%m/%d')} · {len(valid_jobs)}个岗位 · {len(priority_jobs)}个优先",
         body="\n".join(lines),
     )
+    
+    # 保存运行状态
+    save_state()
     print(f"\n✅ 完成！耗时 {elapsed} 秒\n")
 
 

@@ -1,20 +1,21 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-春招岗位自动采集智能体
-每天 09:00 自动运行，采集公众号招聘文章，AI筛选打分，生成Excel，推送微信
 """
-
+春招岗位自动采集智能体 v3
+数据源：Bing搜索（稳定，不封GitHub Actions IP）
+筛选：社会招聘 | 高中及以上学历 | 太原/吕梁/山西优先
+"""
+ 
 import os
 import re
 import json
 import time
 import requests
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 from io import BytesIO
-from urllib.parse import quote, urlparse, parse_qs
-from pathlib import Path
-
+from urllib.parse import quote, urljoin
+ 
 from bs4 import BeautifulSoup
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -36,7 +37,15 @@ ACCOUNTS = [
 TITLE_INCLUDE_KW = ["招聘", "春招", "校招", "岗位", "录用", "招录", "公告", "招募", "用人"]
 TITLE_EXCLUDE_KW = ["实习", "兼职", "劳务", "外包"]
 SCORE_THRESHOLD  = 50
-
+HEADERS_PC = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+}
 # ============================================================
 # 个人求职条件 —— 通过 GitHub Secrets 注入
 # ============================================================

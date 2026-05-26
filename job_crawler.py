@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-"""
-春招岗位自动采集智能体 v3
-数据源：Bing搜索（稳定，不封GitHub Actions IP）
-筛选：社会招聘 | 高中及以上学历 | 太原/吕梁/山西优先
-"""
- 
+# v3 - Bing search, social recruitment, high school and above
+
 import os
 import re
 import json
@@ -14,8 +9,8 @@ import time
 import requests
 from datetime import datetime, date
 from io import BytesIO
-from urllib.parse import quote, urljoin
- 
+from urllib.parse import quote
+
 from bs4 import BeautifulSoup
 import openpyxl
 from openpyxl.styles import PatternFill, Font, Alignment
@@ -23,7 +18,7 @@ from openpyxl.utils import get_column_letter
 from PIL import Image
 
 # ============================================================
-# 配置区 —— 通过 GitHub Secrets 注入
+# Config
 # ============================================================
 KIMI_API_KEY   = os.environ.get("KIMI_API_KEY", "")
 SERVERCHAN_KEY = os.environ.get("SERVERCHAN_KEY", "")
@@ -34,29 +29,9 @@ ACCOUNTS = [
     "山西热门招聘", "太原人才大市场公司招聘找工作",
 ]
 
-TITLE_INCLUDE_KW = ["招聘", "春招", "校招", "岗位", "录用", "招录", "公告", "招募", "用人"]
+TITLE_INCLUDE_KW = ["招聘", "春招", "校招", "岗位", "录用", "招录", "公告", "招募"]
 TITLE_EXCLUDE_KW = ["实习", "兼职", "劳务", "外包"]
 SCORE_THRESHOLD  = 50
-HEADERS_PC = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-}
-# ============================================================
-# 个人求职条件 —— 通过 GitHub Secrets 注入
-# ============================================================
-# 学历：本科及以下（排除：硕士、博士、研究生）
-MAX_EDUCATION = "本科"
-EXCLUDE_EDUCATION = ["硕士", "研究生", "博士", "硕士研究生", "博士研究生"]
-
-# 性别：男性（排除：限女性的岗位）
-PREFERRED_GENDER = "不限"
-EXCLUDE_GENDER = ["女性", "女"]
-
 
 HEADERS_PC = {
     "User-Agent": (
@@ -68,72 +43,54 @@ HEADERS_PC = {
     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
 }
 
+
 # ============================================================
-# 1. Bing 搜索获取微信文章列表（核心改动）
+# 1. Bing search for WeChat articles
 # ============================================================
-def fetch_articles_bing(account: str) -> list[dict]:
-    """通过 Bing 搜索 site:mp.weixin.qq.com 获取公众号文章"""
+def fetch_articles_bing(account):
     articles = []
     seen_urls = set()
- 
-    # 多个搜索词组合，覆盖更多文章
     queries = [
-        f'site:mp.weixin.qq.com "{account}" 招聘',
-        f'site:mp.weixin.qq.com "{account}" 岗位',
-        f'site:mp.weixin.qq.com "{account}" 公告',
+        'site:mp.weixin.qq.com "{}" 招聘'.format(account),
+        'site:mp.weixin.qq.com "{}" 岗位'.format(account),
+        'site:mp.weixin.qq.com "{}" 公告'.format(account),
     ]
- 
     for q in queries:
-        url = f"https://www.bing.com/search?q={quote(q)}&count=10&setlang=zh-CN"
+        url = "https://www.bing.com/search?q={}&count=10&setlang=zh-CN".format(quote(q))
         try:
             resp = requests.get(url, headers=HEADERS_PC, timeout=15)
             soup = BeautifulSoup(resp.text, "lxml")
- 
-            # Bing 搜索结果条目
             for item in soup.select("li.b_algo"):
                 title_el = item.select_one("h2 a")
-                desc_el  = item.select_one(".b_caption p, .b_algoSlug")
-                date_el  = item.select_one(".b_attribution cite, .news_dt")
- 
+                date_el  = item.select_one(".b_attribution cite")
                 if not title_el:
                     continue
- 
                 art_url = title_el.get("href", "")
-                # 只要微信文章链接
                 if "mp.weixin.qq.com" not in art_url:
                     continue
                 if art_url in seen_urls:
                     continue
                 seen_urls.add(art_url)
- 
-                title   = title_el.get_text(strip=True)
-                pub_date = date_el.get_text(strip=True) if date_el else ""
- 
                 articles.append({
-                    "title":    title,
+                    "title":    title_el.get_text(strip=True),
                     "url":      art_url,
-                    "pub_date": pub_date,
+                    "pub_date": date_el.get_text(strip=True) if date_el else "",
                     "source":   account,
                 })
- 
                 if len(articles) >= 15:
                     break
- 
-            time.sleep(2)  # Bing 反爬间隔
- 
+            time.sleep(2)
         except Exception as e:
-            print(f"  [Bing] {account} 搜索失败: {e}")
- 
+            print("  [Bing] {} failed: {}".format(account, e))
         if len(articles) >= 15:
             break
- 
     return articles[:15]
- 
- 
+
+
 # ============================================================
-# 2. 标题关键词过滤
+# 2. Title filter
 # ============================================================
-def filter_by_title(articles: list[dict]) -> list[dict]:
+def filter_by_title(articles):
     result = []
     for art in articles:
         t = art["title"]
@@ -141,44 +98,39 @@ def filter_by_title(articles: list[dict]) -> list[dict]:
             if not any(kw in t for kw in TITLE_EXCLUDE_KW):
                 result.append(art)
     return result
- 
- 
+
+
 # ============================================================
-# 3. 抓取微信文章正文
+# 3. Fetch article content
 # ============================================================
-def fetch_article_detail(url: str) -> tuple[str, list[str]]:
-    """抓取微信文章正文和图片"""
+def fetch_article_detail(url):
     if not url.startswith("http"):
         return "", []
     try:
         resp = requests.get(url, headers=HEADERS_PC, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
- 
         body = soup.select_one("#js_content, .rich_media_content")
         if not body:
             text = soup.get_text()[:5000]
-            print(f"    未找到正文容器，使用全文: {len(text)} 字")
+            print("    no body, text len={}".format(len(text)))
             return text, []
- 
         text = body.get_text(separator="\n", strip=True)[:6000]
         imgs = []
         for img in body.select("img"):
             src = img.get("data-src") or img.get("src", "")
             if src and src.startswith("http") and "mmbiz" in src:
                 imgs.append(src)
- 
-        print(f"    正文: {len(text)} 字，图片: {len(imgs)} 张")
+        print("    text={} chars, imgs={}".format(len(text), len(imgs)))
         return text, imgs[:10]
- 
     except Exception as e:
-        print(f"    抓取正文失败: {e}")
+        print("    fetch failed: {}".format(e))
         return "", []
- 
- 
+
+
 # ============================================================
-# 4. 二维码识别
+# 4. QR code decode
 # ============================================================
-def decode_qr(img_urls: list[str]) -> list[str]:
+def decode_qr(img_urls):
     links = []
     try:
         from pyzbar.pyzbar import decode as pyzbar_decode
@@ -195,36 +147,35 @@ def decode_qr(img_urls: list[str]) -> list[str]:
         except Exception:
             pass
     return links
- 
- 
+
+
 # ============================================================
-# 5. Kimi API 语义筛选 + 打分
+# 5. Kimi API
 # ============================================================
 SYSTEM_PROMPT = """你是一个专业的招聘信息分析助手。
- 
+
 ## 前置筛选条件（必须同时满足才保留）
-1. 招聘类型：必须是【社会招聘】（含校招+社招混合批次均可）
-   ❌ 排除：仅限应届生/仅限校招/实习/兼职/志愿者
-2. 学历要求：【高中及以上】均保留
-   ✅ 保留：高中、中专、大专、本科、研究生、学历不限
-   ❌ 排除：仅限硕士/博士（不同时招本科的）
+1. 招聘类型：必须是社会招聘（含校招+社招混合批次均可）
+   排除：仅限应届生/仅限校招/实习/兼职/志愿者
+2. 学历要求：高中及以上均保留
+   保留：高中、中专、大专、本科、研究生、学历不限
+   排除：仅限硕士/博士（不同时招本科的）
 3. 工作性质：正式用工
-   ❌ 排除：实习、兼职、劳务派遣、外包、临时工
- 
-## 打分规则（从0分开始累加）
-+ 工作地点为太原/吕梁/山西：+30分
-+ 岗位类型匹配（销售/行政/交付/运营/管理/技术）：+20分
-+ 国企/央企/事业单位：+20分
-+ 有明确薪资信息：+10分
-+ 有明确截止日期：+10分
-- 含排除关键词（实习/外包/派遣/仅限应届）：-100分
- 
+   排除：实习、兼职、劳务派遣、外包、临时工
+
+## 打分规则（从0分开始）
+工作地点为太原/吕梁/山西 +30
+岗位类型匹配（销售/行政/交付/运营/管理/技术）+20
+国企/央企/事业单位 +20
+有明确薪资信息 +10
+有明确截止日期 +10
+含排除关键词（实习/外包/派遣/仅限应届）-100
+
 ## 严格要求
-- 正文不足100字时，直接返回空jobs列表，绝对不能编造
+- 正文不足100字时直接返回空jobs列表，不能编造
 - 岗位名称、城市、薪资、截止日期必须来自原文
 - 不确定的字段填空字符串，不要猜测
-- 一篇文章可以提取多个不同岗位
- 
+
 ## 输出（纯JSON，不含任何说明文字）
 {
   "jobs": [
@@ -244,36 +195,29 @@ SYSTEM_PROMPT = """你是一个专业的招聘信息分析助手。
     }
   ]
 }"""
- 
- 
-def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
+
+
+def analyze_with_kimi(article, qr_links):
     if not KIMI_API_KEY:
-        print("  ⚠️  KIMI_API_KEY 未配置")
+        print("  KIMI_API_KEY not set")
         return []
- 
     content = article.get("content", "")
     if len(content) < 100:
-        print(f"  ⚠️  正文太短({len(content)}字)，跳过")
+        print("  content too short ({}), skip".format(len(content)))
         return []
- 
-    qr_info = ("\n\n二维码解码链接：\n" + "\n".join(qr_links)) if qr_links else ""
+    qr_info = ("\n\nQR links:\n" + "\n".join(qr_links)) if qr_links else ""
     user_msg = (
-        f"来源公众号：{article['source']}\n"
-        f"文章标题：{article['title']}\n"
-        f"发布日期：{article['pub_date']}\n"
-        f"原文链接：{article['url']}\n\n"
-        f"文章正文：\n{content}"
-        f"{qr_info}\n\n"
-        f"请分析以上招聘文章，提取所有符合前置条件（社会招聘+高中及以上）的岗位并打分。"
+        "来源公众号：{}\n文章标题：{}\n发布日期：{}\n原文链接：{}\n\n文章正文：\n{}{}\n\n"
+        "请分析以上招聘文章，提取所有符合前置条件（社会招聘+高中及以上）的岗位并打分。"
+    ).format(
+        article["source"], article["title"],
+        article["pub_date"], article["url"],
+        content, qr_info
     )
- 
     try:
         resp = requests.post(
             "https://api.moonshot.cn/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {KIMI_API_KEY}",
-                "Content-Type": "application/json",
-            },
+            headers={"Authorization": "Bearer {}".format(KIMI_API_KEY), "Content-Type": "application/json"},
             json={
                 "model": "moonshot-v1-32k",
                 "messages": [
@@ -281,17 +225,15 @@ def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
                     {"role": "user",   "content": user_msg},
                 ],
                 "temperature": 0.1,
-                "max_tokens":  2048,
+                "max_tokens": 2048,
             },
             timeout=40,
         )
         raw = resp.json()["choices"][0]["message"]["content"]
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         if not m:
-            print(f"    Kimi返回无法解析")
             return []
-        data  = json.loads(m.group())
-        jobs  = data.get("jobs", [])
+        jobs = json.loads(m.group()).get("jobs", [])
         for job in jobs:
             job["source"]      = article["source"]
             job["article_url"] = article["url"]
@@ -299,47 +241,41 @@ def analyze_with_kimi(article: dict, qr_links: list[str]) -> list[dict]:
             job["qr_links"]    = qr_links
         return jobs
     except Exception as e:
-        print(f"    Kimi调用失败: {e}")
+        print("    Kimi failed: {}".format(e))
         return []
- 
- 
+
+
 # ============================================================
-# 6. 生成 Excel
+# 6. Generate Excel
 # ============================================================
-def generate_excel(all_jobs: list[dict]) -> str:
-    valid = [
-        j for j in all_jobs
-        if not j.get("excluded") and j.get("score", 0) >= SCORE_THRESHOLD
-    ]
+def generate_excel(all_jobs):
+    valid = [j for j in all_jobs if not j.get("excluded") and j.get("score", 0) >= SCORE_THRESHOLD]
     valid.sort(key=lambda x: x.get("score", 0), reverse=True)
- 
+
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = f"岗位清单_{date.today().strftime('%m%d')}"
- 
+    ws.title = "岗位清单_{}".format(date.today().strftime("%m%d"))
+
     headers = [
         "匹配度", "投递优先级", "岗位名称", "招聘单位",
         "工作城市", "学历要求", "招聘类型", "发布日期",
         "投递链接", "薪资信息", "截止日期", "岗位摘要",
         "原文链接", "来源公众号",
     ]
- 
     h_fill = PatternFill("solid", fgColor="2E4057")
     h_font = Font(color="FFFFFF", bold=True, size=11)
     center = Alignment(horizontal="center", vertical="center", wrap_text=True)
- 
     for col, h in enumerate(headers, 1):
         c = ws.cell(row=1, column=col, value=h)
         c.fill = h_fill
         c.font = h_font
         c.alignment = center
     ws.row_dimensions[1].height = 32
- 
+
     fills = {
         "✅ 优先投递": PatternFill("solid", fgColor="D4EDDA"),
         "⚠️ 待复核":  PatternFill("solid", fgColor="FFF3CD"),
     }
- 
     for ri, job in enumerate(valid, 2):
         score    = job.get("score", 0)
         priority = "✅ 优先投递" if score >= 80 else "⚠️ 待复核"
@@ -348,17 +284,11 @@ def generate_excel(all_jobs: list[dict]) -> str:
                     job.get("article_url", ""))
         row = [
             score, priority,
-            job.get("job_name", ""),
-            job.get("employer", ""),
-            job.get("city", ""),
-            job.get("education_req", ""),
-            job.get("recruitment_type", ""),
-            job.get("pub_date", ""),
-            link,
-            job.get("salary_info", ""),
-            job.get("deadline", ""),
-            job.get("summary", ""),
-            job.get("article_url", ""),
+            job.get("job_name", ""), job.get("employer", ""),
+            job.get("city", ""), job.get("education_req", ""),
+            job.get("recruitment_type", ""), job.get("pub_date", ""),
+            link, job.get("salary_info", ""), job.get("deadline", ""),
+            job.get("summary", ""), job.get("article_url", ""),
             job.get("source", ""),
         ]
         rf = fills.get(priority)
@@ -371,33 +301,36 @@ def generate_excel(all_jobs: list[dict]) -> str:
                 c.font = Font(bold=True, size=12)
                 c.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[ri].height = 45
- 
+
     widths = [8, 13, 22, 20, 10, 10, 10, 10, 42, 15, 12, 36, 42, 15]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
- 
-    # 同时打印岗位明细到日志（方便在GitHub Actions里直接查看）
+
+    # Print job details to log
     print("\n" + "="*60)
-    print(f"📋 岗位明细（共{len(valid)}个）")
+    print("岗位明细 ({} 个)".format(len(valid)))
     print("="*60)
     for job in valid:
-        print(f"\n【{job.get('job_name','')}】{job.get('employer','')} | {job.get('city','')} | {job.get('score',0)}分")
-        print(f"  学历：{job.get('education_req','')} | 类型：{job.get('recruitment_type','')} | 薪资：{job.get('salary_info','未知')}")
-        print(f"  截止：{job.get('deadline','未知')} | 来源：{job.get('source','')}")
-        print(f"  摘要：{job.get('summary','')}")
-        print(f"  链接：{job.get('article_url','')}")
+        print("\n[{}] {} | {} | {}分".format(
+            job.get("job_name",""), job.get("employer",""),
+            job.get("city",""), job.get("score",0)))
+        print("  学历:{} | 薪资:{} | 截止:{}".format(
+            job.get("education_req",""), job.get("salary_info","无"),
+            job.get("deadline","未知")))
+        print("  {}".format(job.get("summary","")))
+        print("  {}".format(job.get("article_url","")))
     print("="*60 + "\n")
- 
-    path = f"/tmp/招聘岗位_{date.today().strftime('%Y%m%d')}.xlsx"
+
+    path = "/tmp/招聘岗位_{}.xlsx".format(date.today().strftime("%Y%m%d"))
     wb.save(path)
     return path, valid
- 
- 
+
+
 # ============================================================
-# 7. 上传 Excel
+# 7. Upload Excel
 # ============================================================
-def upload_excel(path: str) -> str:
+def upload_excel(path):
     try:
         with open(path, "rb") as f:
             resp = requests.post(
@@ -410,132 +343,118 @@ def upload_excel(path: str) -> str:
         if data.get("success"):
             return data.get("link", "")
     except Exception as e:
-        print(f"  文件上传失败: {e}")
+        print("upload failed: {}".format(e))
     return ""
- 
- 
+
+
 # ============================================================
-# 8. Server酱推送
+# 8. WeChat push
 # ============================================================
-def push_wechat(title: str, body: str):
+def push_wechat(title, body):
     if not SERVERCHAN_KEY:
-        print("  ⚠️  SERVERCHAN_KEY未配置")
+        print("SERVERCHAN_KEY not set")
         return
     try:
         resp = requests.post(
-            f"https://sctapi.ftqq.com/{SERVERCHAN_KEY}.send",
+            "https://sctapi.ftqq.com/{}.send".format(SERVERCHAN_KEY),
             data={"title": title, "desp": body},
             timeout=12,
         )
         r = resp.json()
-        print("  ✅ 微信推送成功" if r.get("code") == 0 else f"  ⚠️ 推送: {r}")
+        print("push ok" if r.get("code") == 0 else "push result: {}".format(r))
     except Exception as e:
-        print(f"  ❌ 推送失败: {e}")
- 
- 
+        print("push failed: {}".format(e))
+
+
 # ============================================================
-# 主流程
+# Main
 # ============================================================
 def main():
     start = datetime.now()
-    print(f"\n{'='*55}")
-    print(f"🚀 春招岗位采集 v3 启动 {start.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"📌 数据源：Bing搜索（稳定）")
-    print(f"📌 筛选：社会招聘 | 高中及以上 | 太原/吕梁/山西优先")
-    print(f"{'='*55}\n")
- 
-    # Step 1: 采集
+    print("\n" + "="*55)
+    print("春招岗位采集 v3 - {}".format(start.strftime("%Y-%m-%d %H:%M:%S")))
+    print("数据源: Bing | 筛选: 社会招聘 | 高中及以上 | 山西优先")
+    print("="*55 + "\n")
+
     all_articles = []
     for account in ACCOUNTS:
-        print(f"📡 采集: {account}")
+        print("采集: {}".format(account))
         arts = fetch_articles_bing(account)
-        print(f"   找到 {len(arts)} 篇文章")
+        print("  找到 {} 篇文章".format(len(arts)))
         all_articles.extend(arts)
- 
+
     if not all_articles:
-        print("\n⚠️  所有公众号均未采集到文章，请检查网络或搜索词配置")
+        print("未采集到任何文章")
         push_wechat(
-            title=f"⚠️ 招聘采集异常 {date.today().strftime('%m/%d')}",
-            body="今日采集到0篇文章，可能是搜索引擎暂时不可用，明日自动重试。"
+            "招聘采集异常 {}".format(date.today().strftime("%m/%d")),
+            "今日采集到0篇文章，可能是搜索引擎暂时不可用，明日自动重试。"
         )
         return
- 
-    # Step 2: 标题过滤
+
     filtered = filter_by_title(all_articles)
-    print(f"\n🔍 标题过滤: {len(all_articles)} → {len(filtered)} 篇\n")
- 
-    # Step 3-5: 正文+二维码+AI
+    print("\n标题过滤: {} -> {} 篇\n".format(len(all_articles), len(filtered)))
+
     all_jobs = []
     for i, art in enumerate(filtered, 1):
-        print(f"[{i}/{len(filtered)}] {art['title'][:40]}...")
+        print("[{}/{}] {}...".format(i, len(filtered), art["title"][:40]))
         content, imgs = fetch_article_detail(art["url"])
         art["content"] = content
         qr_links = decode_qr(imgs)
         if qr_links:
-            print(f"   🔳 二维码: {len(qr_links)} 个")
+            print("  QR: {} links".format(len(qr_links)))
         jobs = analyze_with_kimi(art, qr_links)
         valid_n = len([j for j in jobs if not j.get("excluded")])
-        print(f"   💼 提取: {len(jobs)} 个，有效: {valid_n} 个")
+        print("  jobs={}, valid={}".format(len(jobs), valid_n))
         all_jobs.extend(jobs)
         time.sleep(2)
- 
-    # Step 6: Excel
+
     valid_jobs, priority_jobs = [], []
     excel_path, dl_link = "", ""
     if all_jobs:
-        excel_path, valid_jobs_list = generate_excel(all_jobs)
-        valid_jobs    = valid_jobs_list
+        excel_path, valid_jobs = generate_excel(all_jobs)
         priority_jobs = [j for j in valid_jobs if j.get("score", 0) >= 80]
         dl_link = upload_excel(excel_path)
- 
+
     elapsed = (datetime.now() - start).seconds
-    print(f"\n📊 汇总: 文章{len(filtered)}篇 | 有效{len(valid_jobs)}个 | 优先{len(priority_jobs)}个 | 耗时{elapsed}秒")
- 
-    # Step 7: 推送
+    print("汇总: 文章{}篇 | 有效{}个 | 优先{}个 | 耗时{}秒".format(
+        len(filtered), len(valid_jobs), len(priority_jobs), elapsed))
+
     lines = [
-        f"今日共采集 **{len(filtered)}** 篇招聘文章，"
-        f"筛选出 **{len(valid_jobs)}** 个符合要求的岗位，"
-        f"其中优先投递 **{len(priority_jobs)}** 个",
-        f"\n> 筛选条件：社会招聘 | 高中及以上 | 太原/吕梁/山西优先",
-        f"\n⏱ 耗时：{elapsed}秒  \n",
+        "今日共采集 **{}** 篇招聘文章，筛选出 **{}** 个符合要求的岗位，其中优先投递 **{}** 个".format(
+            len(filtered), len(valid_jobs), len(priority_jobs)),
+        "\n> 筛选条件：社会招聘 | 高中及以上 | 太原/吕梁/山西优先",
+        "\n耗时：{}秒\n".format(elapsed),
     ]
- 
     if priority_jobs:
-        lines += ["### ✅ 优先投递岗位", ""]
+        lines += ["### 优先投递岗位", ""]
         for job in priority_jobs[:8]:
-            sal  = f" | {job['salary_info']}"  if job.get("salary_info")  else ""
-            edu  = f" | {job['education_req']}" if job.get("education_req") else ""
-            dead = f" | 截止{job['deadline']}"  if job.get("deadline")     else ""
-            lines.append(
-                f"**{job.get('job_name','')}** · {job.get('employer','')} · "
-                f"{job.get('city','')}{sal}{edu}{dead} · {job.get('score',0)}分  "
-            )
-        if len(priority_jobs) > 8:
-            lines.append(f"\n...共{len(priority_jobs)}个优先岗位")
- 
-    if valid_jobs and len(valid_jobs) > len(priority_jobs):
-        lines += ["", "### ⚠️ 待复核岗位", ""]
-        review = [j for j in valid_jobs if j.get("score", 0) < 80]
+            sal  = " | {}".format(job["salary_info"])  if job.get("salary_info")  else ""
+            edu  = " | {}".format(job["education_req"]) if job.get("education_req") else ""
+            dead = " | 截止{}".format(job["deadline"])  if job.get("deadline")     else ""
+            lines.append("**{}** · {} · {}{}{}{}  · {}分  ".format(
+                job.get("job_name",""), job.get("employer",""),
+                job.get("city",""), sal, edu, dead, job.get("score",0)))
+    review = [j for j in valid_jobs if j.get("score", 0) < 80]
+    if review:
+        lines += ["", "### 待复核岗位", ""]
         for job in review[:5]:
-            lines.append(
-                f"**{job.get('job_name','')}** · {job.get('employer','')} · "
-                f"{job.get('city','')} · {job.get('score',0)}分  "
-            )
- 
+            lines.append("**{}** · {} · {} · {}分  ".format(
+                job.get("job_name",""), job.get("employer",""),
+                job.get("city",""), job.get("score",0)))
     if dl_link:
-        lines += ["", f"📥 [点击下载Excel岗位清单]({dl_link})（7天有效）"]
+        lines += ["", "[点击下载Excel岗位清单]({})（7天有效）".format(dl_link)]
     elif valid_jobs:
-        lines += ["", "📥 Excel已上传至 GitHub Actions Artifacts，登录GitHub下载"]
- 
+        lines += ["", "Excel已上传至 GitHub Actions Artifacts，登录GitHub下载"]
     if not valid_jobs:
-        lines += ["", "💬 今日未发现符合条件的岗位。"]
- 
+        lines += ["", "今日未发现符合条件的岗位。"]
+
     push_wechat(
-        title=f"🎯 招聘速报 {date.today().strftime('%m/%d')} · {len(valid_jobs)}个岗位 · {len(priority_jobs)}个优先",
-        body="\n".join(lines),
+        "招聘速报 {} · {}个岗位 · {}个优先".format(
+            date.today().strftime("%m/%d"), len(valid_jobs), len(priority_jobs)),
+        "\n".join(lines),
     )
-    print("✅ 完成！\n")
- 
- 
+    print("完成！\n")
+
+
 if __name__ == "__main__":
     main()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-# v3 - Bing search, social recruitment, high school and above
+# v4 - Baidu search as primary, debug output added
 
 import os
 import re
@@ -33,57 +33,104 @@ TITLE_INCLUDE_KW = ["招聘", "春招", "校招", "岗位", "录用", "招录", 
 TITLE_EXCLUDE_KW = ["实习", "兼职", "劳务", "外包"]
 SCORE_THRESHOLD  = 50
 
-HEADERS_PC = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
+HEADERS_BAIDU = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": "https://www.baidu.com/",
+}
+
+HEADERS_WX = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Accept-Language": "zh-CN,zh;q=0.9",
 }
 
 
 # ============================================================
-# 1. Bing search for WeChat articles
+# 1. Baidu search for WeChat articles
 # ============================================================
-def fetch_articles_bing(account):
+def fetch_articles_baidu(account):
     articles = []
     seen_urls = set()
+
     queries = [
-        'site:mp.weixin.qq.com "{}" 招聘'.format(account),
-        'site:mp.weixin.qq.com "{}" 岗位'.format(account),
-        'site:mp.weixin.qq.com "{}" 公告'.format(account),
+        'site:mp.weixin.qq.com {} 招聘'.format(account),
+        'site:mp.weixin.qq.com {} 岗位'.format(account),
     ]
+
     for q in queries:
-        url = "https://www.bing.com/search?q={}&count=10&setlang=zh-CN".format(quote(q))
+        url = "https://www.baidu.com/s?wd={}&rn=20&ie=utf-8".format(quote(q))
         try:
-            resp = requests.get(url, headers=HEADERS_PC, timeout=15)
+            resp = requests.get(url, headers=HEADERS_BAIDU, timeout=15)
+            print("  Baidu status={} len={}".format(resp.status_code, len(resp.text)))
+
             soup = BeautifulSoup(resp.text, "lxml")
-            for item in soup.select("li.b_algo"):
-                title_el = item.select_one("h2 a")
-                date_el  = item.select_one(".b_attribution cite")
-                if not title_el:
+
+            # Baidu result selectors - try multiple
+            items = (soup.select("div.result") or
+                     soup.select("div.c-container") or
+                     soup.select("[tpl='se_com_default']"))
+
+            print("  Baidu items found: {}".format(len(items)))
+
+            for item in items:
+                # find link
+                link_el = (item.select_one("h3.t a") or
+                           item.select_one("h3 a") or
+                           item.select_one("a[href*='mp.weixin']"))
+                if not link_el:
                     continue
-                art_url = title_el.get("href", "")
-                if "mp.weixin.qq.com" not in art_url:
+
+                href = link_el.get("href", "")
+                title = link_el.get_text(strip=True)
+
+                # Baidu wraps real URLs - follow redirect
+                if "baidu.com/link" in href or not href.startswith("http"):
+                    try:
+                        r2 = requests.get(href, headers=HEADERS_BAIDU,
+                                          timeout=8, allow_redirects=True)
+                        final_url = r2.url
+                    except Exception:
+                        final_url = href
+                else:
+                    final_url = href
+
+                if "mp.weixin.qq.com" not in final_url:
                     continue
-                if art_url in seen_urls:
+                if final_url in seen_urls:
                     continue
-                seen_urls.add(art_url)
+                seen_urls.add(final_url)
+
+                date_el = item.select_one(".c-color-gray2, .newTimeFactor_before_abs, .c-abstract")
+                pub_date = ""
+                if date_el:
+                    txt = date_el.get_text(strip=True)
+                    # extract date pattern
+                    m = re.search(r"\d{4}[-年]\d{1,2}[-月]\d{1,2}", txt)
+                    if m:
+                        pub_date = m.group()
+
                 articles.append({
-                    "title":    title_el.get_text(strip=True),
-                    "url":      art_url,
-                    "pub_date": date_el.get_text(strip=True) if date_el else "",
+                    "title":    title,
+                    "url":      final_url,
+                    "pub_date": pub_date,
                     "source":   account,
                 })
+                print("  + {}".format(title[:30]))
+
                 if len(articles) >= 15:
                     break
-            time.sleep(2)
+
+            time.sleep(3)
+
         except Exception as e:
-            print("  [Bing] {} failed: {}".format(account, e))
+            print("  [Baidu] {} failed: {}".format(account, e))
+
         if len(articles) >= 15:
             break
+
     return articles[:15]
 
 
@@ -101,18 +148,18 @@ def filter_by_title(articles):
 
 
 # ============================================================
-# 3. Fetch article content
+# 3. Fetch WeChat article content
 # ============================================================
 def fetch_article_detail(url):
     if not url.startswith("http"):
         return "", []
     try:
-        resp = requests.get(url, headers=HEADERS_PC, timeout=15)
+        resp = requests.get(url, headers=HEADERS_WX, timeout=15)
         soup = BeautifulSoup(resp.text, "lxml")
         body = soup.select_one("#js_content, .rich_media_content")
         if not body:
             text = soup.get_text()[:5000]
-            print("    no body, text len={}".format(len(text)))
+            print("    no body container, text={}".format(len(text)))
             return text, []
         text = body.get_text(separator="\n", strip=True)[:6000]
         imgs = []
@@ -128,7 +175,7 @@ def fetch_article_detail(url):
 
 
 # ============================================================
-# 4. QR code decode
+# 4. QR decode
 # ============================================================
 def decode_qr(img_urls):
     links = []
@@ -138,7 +185,7 @@ def decode_qr(img_urls):
         return links
     for url in img_urls:
         try:
-            resp = requests.get(url, headers=HEADERS_PC, timeout=8)
+            resp = requests.get(url, headers=HEADERS_WX, timeout=8)
             img = Image.open(BytesIO(resp.content)).convert("RGB")
             for code in pyzbar_decode(img):
                 data = code.data.decode("utf-8", errors="ignore")
@@ -205,9 +252,10 @@ def analyze_with_kimi(article, qr_links):
     if len(content) < 100:
         print("  content too short ({}), skip".format(len(content)))
         return []
-    qr_info = ("\n\nQR links:\n" + "\n".join(qr_links)) if qr_links else ""
+    qr_info = ("\nQR links:\n" + "\n".join(qr_links)) if qr_links else ""
     user_msg = (
-        "来源公众号：{}\n文章标题：{}\n发布日期：{}\n原文链接：{}\n\n文章正文：\n{}{}\n\n"
+        "来源公众号：{}\n文章标题：{}\n发布日期：{}\n原文链接：{}\n\n"
+        "文章正文：\n{}{}\n\n"
         "请分析以上招聘文章，提取所有符合前置条件（社会招聘+高中及以上）的岗位并打分。"
     ).format(
         article["source"], article["title"],
@@ -217,7 +265,8 @@ def analyze_with_kimi(article, qr_links):
     try:
         resp = requests.post(
             "https://api.moonshot.cn/v1/chat/completions",
-            headers={"Authorization": "Bearer {}".format(KIMI_API_KEY), "Content-Type": "application/json"},
+            headers={"Authorization": "Bearer {}".format(KIMI_API_KEY),
+                     "Content-Type": "application/json"},
             json={
                 "model": "moonshot-v1-32k",
                 "messages": [
@@ -246,10 +295,11 @@ def analyze_with_kimi(article, qr_links):
 
 
 # ============================================================
-# 6. Generate Excel
+# 6. Generate Excel + print log
 # ============================================================
 def generate_excel(all_jobs):
-    valid = [j for j in all_jobs if not j.get("excluded") and j.get("score", 0) >= SCORE_THRESHOLD]
+    valid = [j for j in all_jobs
+             if not j.get("excluded") and j.get("score", 0) >= SCORE_THRESHOLD]
     valid.sort(key=lambda x: x.get("score", 0), reverse=True)
 
     wb = openpyxl.Workbook()
@@ -273,15 +323,15 @@ def generate_excel(all_jobs):
     ws.row_dimensions[1].height = 32
 
     fills = {
-        "✅ 优先投递": PatternFill("solid", fgColor="D4EDDA"),
-        "⚠️ 待复核":  PatternFill("solid", fgColor="FFF3CD"),
+        "优先投递": PatternFill("solid", fgColor="D4EDDA"),
+        "待复核":   PatternFill("solid", fgColor="FFF3CD"),
     }
     for ri, job in enumerate(valid, 2):
         score    = job.get("score", 0)
-        priority = "✅ 优先投递" if score >= 80 else "⚠️ 待复核"
-        link     = (job.get("apply_link") or
-                    (job.get("qr_links") or [""])[0] or
-                    job.get("article_url", ""))
+        priority = "优先投递" if score >= 80 else "待复核"
+        link = (job.get("apply_link") or
+                (job.get("qr_links") or [""])[0] or
+                job.get("article_url", ""))
         row = [
             score, priority,
             job.get("job_name", ""), job.get("employer", ""),
@@ -302,24 +352,24 @@ def generate_excel(all_jobs):
                 c.alignment = Alignment(horizontal="center", vertical="center")
         ws.row_dimensions[ri].height = 45
 
-    widths = [8, 13, 22, 20, 10, 10, 10, 10, 42, 15, 12, 36, 42, 15]
+    widths = [8, 10, 22, 20, 10, 10, 10, 10, 42, 15, 12, 36, 42, 15]
     for i, w in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "A2"
 
-    # Print job details to log
+    # Print to log so visible in GitHub Actions
     print("\n" + "="*60)
-    print("岗位明细 ({} 个)".format(len(valid)))
+    print("RESULT: {} jobs found".format(len(valid)))
     print("="*60)
     for job in valid:
-        print("\n[{}] {} | {} | {}分".format(
+        print("\n[{}] {} | {} | score={}".format(
             job.get("job_name",""), job.get("employer",""),
             job.get("city",""), job.get("score",0)))
-        print("  学历:{} | 薪资:{} | 截止:{}".format(
-            job.get("education_req",""), job.get("salary_info","无"),
-            job.get("deadline","未知")))
+        print("  edu={} | salary={} | deadline={}".format(
+            job.get("education_req",""), job.get("salary_info","N/A"),
+            job.get("deadline","N/A")))
         print("  {}".format(job.get("summary","")))
-        print("  {}".format(job.get("article_url","")))
+        print("  URL: {}".format(job.get("article_url","")))
     print("="*60 + "\n")
 
     path = "/tmp/招聘岗位_{}.xlsx".format(date.today().strftime("%Y%m%d"))
@@ -328,7 +378,7 @@ def generate_excel(all_jobs):
 
 
 # ============================================================
-# 7. Upload Excel
+# 7. Upload
 # ============================================================
 def upload_excel(path):
     try:
@@ -361,7 +411,7 @@ def push_wechat(title, body):
             timeout=12,
         )
         r = resp.json()
-        print("push ok" if r.get("code") == 0 else "push result: {}".format(r))
+        print("push ok" if r.get("code") == 0 else "push: {}".format(r))
     except Exception as e:
         print("push failed: {}".format(e))
 
@@ -372,51 +422,49 @@ def push_wechat(title, body):
 def main():
     start = datetime.now()
     print("\n" + "="*55)
-    print("春招岗位采集 v3 - {}".format(start.strftime("%Y-%m-%d %H:%M:%S")))
-    print("数据源: Bing | 筛选: 社会招聘 | 高中及以上 | 山西优先")
+    print("v4 start - {}".format(start.strftime("%Y-%m-%d %H:%M:%S")))
+    print("source=Baidu | filter=social+highschool+ | priority=Shanxi")
     print("="*55 + "\n")
 
     all_articles = []
     for account in ACCOUNTS:
-        print("采集: {}".format(account))
-        arts = fetch_articles_bing(account)
-        print("  找到 {} 篇文章".format(len(arts)))
+        print("fetch: {}".format(account))
+        arts = fetch_articles_baidu(account)
+        print("  got {} articles".format(len(arts)))
         all_articles.extend(arts)
 
+    print("\ntotal articles: {}".format(len(all_articles)))
+
     if not all_articles:
-        print("未采集到任何文章")
-        push_wechat(
-            "招聘采集异常 {}".format(date.today().strftime("%m/%d")),
-            "今日采集到0篇文章，可能是搜索引擎暂时不可用，明日自动重试。"
-        )
+        msg = "今日采集0篇文章，搜索引擎可能暂时不可用，明日自动重试。"
+        print(msg)
+        push_wechat("招聘采集异常 {}".format(date.today().strftime("%m/%d")), msg)
         return
 
     filtered = filter_by_title(all_articles)
-    print("\n标题过滤: {} -> {} 篇\n".format(len(all_articles), len(filtered)))
+    print("after title filter: {} articles\n".format(len(filtered)))
 
     all_jobs = []
     for i, art in enumerate(filtered, 1):
-        print("[{}/{}] {}...".format(i, len(filtered), art["title"][:40]))
+        print("[{}/{}] {}".format(i, len(filtered), art["title"][:40]))
         content, imgs = fetch_article_detail(art["url"])
         art["content"] = content
         qr_links = decode_qr(imgs)
-        if qr_links:
-            print("  QR: {} links".format(len(qr_links)))
         jobs = analyze_with_kimi(art, qr_links)
         valid_n = len([j for j in jobs if not j.get("excluded")])
-        print("  jobs={}, valid={}".format(len(jobs), valid_n))
+        print("  jobs={} valid={}".format(len(jobs), valid_n))
         all_jobs.extend(jobs)
         time.sleep(2)
 
     valid_jobs, priority_jobs = [], []
-    excel_path, dl_link = "", ""
+    excel_path = dl_link = ""
     if all_jobs:
         excel_path, valid_jobs = generate_excel(all_jobs)
         priority_jobs = [j for j in valid_jobs if j.get("score", 0) >= 80]
         dl_link = upload_excel(excel_path)
 
     elapsed = (datetime.now() - start).seconds
-    print("汇总: 文章{}篇 | 有效{}个 | 优先{}个 | 耗时{}秒".format(
+    print("done: articles={} valid={} priority={} elapsed={}s".format(
         len(filtered), len(valid_jobs), len(priority_jobs), elapsed))
 
     lines = [
@@ -426,25 +474,25 @@ def main():
         "\n耗时：{}秒\n".format(elapsed),
     ]
     if priority_jobs:
-        lines += ["### 优先投递岗位", ""]
+        lines += ["### 优先投递", ""]
         for job in priority_jobs[:8]:
-            sal  = " | {}".format(job["salary_info"])  if job.get("salary_info")  else ""
+            sal  = " | {}".format(job["salary_info"]) if job.get("salary_info") else ""
             edu  = " | {}".format(job["education_req"]) if job.get("education_req") else ""
-            dead = " | 截止{}".format(job["deadline"])  if job.get("deadline")     else ""
+            dead = " | 截止{}".format(job["deadline"]) if job.get("deadline") else ""
             lines.append("**{}** · {} · {}{}{}{}  · {}分  ".format(
                 job.get("job_name",""), job.get("employer",""),
                 job.get("city",""), sal, edu, dead, job.get("score",0)))
     review = [j for j in valid_jobs if j.get("score", 0) < 80]
     if review:
-        lines += ["", "### 待复核岗位", ""]
+        lines += ["", "### 待复核", ""]
         for job in review[:5]:
             lines.append("**{}** · {} · {} · {}分  ".format(
                 job.get("job_name",""), job.get("employer",""),
                 job.get("city",""), job.get("score",0)))
     if dl_link:
-        lines += ["", "[点击下载Excel岗位清单]({})（7天有效）".format(dl_link)]
+        lines += ["", "[点击下载Excel]({})（7天有效）".format(dl_link)]
     elif valid_jobs:
-        lines += ["", "Excel已上传至 GitHub Actions Artifacts，登录GitHub下载"]
+        lines += ["", "Excel已上传至GitHub Actions Artifacts"]
     if not valid_jobs:
         lines += ["", "今日未发现符合条件的岗位。"]
 
@@ -453,7 +501,7 @@ def main():
             date.today().strftime("%m/%d"), len(valid_jobs), len(priority_jobs)),
         "\n".join(lines),
     )
-    print("完成！\n")
+    print("all done\n")
 
 
 if __name__ == "__main__":

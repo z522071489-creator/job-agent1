@@ -1,46 +1,40 @@
 name: 春招岗位自动采集
 
 on:
-  # 每天北京时间 09:00 自动运行（UTC 01:00）
   schedule:
-    - cron: '0 1 * * *'
-
-  # 允许在 GitHub 网页上手动触发（方便测试）
-  workflow_dispatch:
+    - cron: '0 1 * * *'   # 每天北京时间 09:00
+  workflow_dispatch:        # 支持手动触发
 
 jobs:
   crawl:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
 
     steps:
       - name: 拉取代码
         uses: actions/checkout@v4
 
-      - name: 安装 Python 3.11
+      - name: 安装 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 安装系统依赖（二维码识别库）
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y libzbar0
+      - name: 安装依赖
+        run: pip install requests openpyxl
 
-      - name: 安装 Python 依赖
-        run: pip install -r requirements.txt
-
-      - name: 运行采集脚本
+      - name: 调用 SCF 采集 + 生成 Excel + 推送微信
         env:
-          KIMI_API_KEY:   ${{ secrets.KIMI_API_KEY }}
+          SCF_URL: ${{ secrets.SCF_URL }}
           SERVERCHAN_KEY: ${{ secrets.SERVERCHAN_KEY }}
-        run: python job_crawler.py
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: python job-collector/scripts/run.py
 
-      - name: 上传 Excel 文件（备份到 Artifacts）
+      - name: 上传 Excel（备份）
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: 招聘岗位清单-${{ github.run_number }}
-          path: /tmp/招聘岗位_*.xlsx
+          path: /tmp/招聘汇总_*.xlsx
           retention-days: 14
           if-no-files-found: ignore

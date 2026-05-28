@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>招聘采集系统 - 部署指南</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Microsoft YaHei", sans-serif; background: #f4f6f8; color: #333; line-height: 1.6; }
+  .hero { background: #2B5797; color: #fff; padding: 36px 40px 28px; }
+  .hero h1 { font-size: 22px; font-weight: 600; margin-bottom: 6px; }
+  .hero p { font-size: 14px; opacity: 0.85; }
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 20px; }
+  
+  .step-card { background: #fff; border-radius: 10px; padding: 24px; margin-bottom: 20px; border-left: 4px solid #2B5797; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+  .step-card.warn { border-left-color: #E6A817; }
+  .step-card.success { border-left-color: #27AE60; }
+  .step-header { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .step-num { background: #2B5797; color: #fff; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex-shrink: 0; }
+  .step-num.warn { background: #E6A817; }
+  .step-num.success { background: #27AE60; }
+  .step-title { font-size: 16px; font-weight: 600; color: #2B5797; }
+  .step-title.warn { color: #E6A817; }
+  .step-title.success { color: #27AE60; }
+  
+  table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+  th { background: #2B5797; color: #fff; padding: 8px 12px; text-align: left; }
+  td { padding: 8px 12px; border-bottom: 1px solid #eee; }
+  tr:nth-child(even) td { background: #f9f9f9; }
+  
+  code { background: #f0f2f5; padding: 2px 6px; border-radius: 4px; font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; color: #c7254e; }
+  pre { background: #1e1e2e; color: #cdd6f4; padding: 16px; border-radius: 8px; font-family: Consolas, monospace; font-size: 12px; overflow-x: auto; margin: 10px 0; line-height: 1.7; }
+  pre .c { color: #6c7086; }
+  pre .k { color: #cba6f7; }
+  pre .s { color: #a6e3a1; }
+  pre .n { color: #89dceb; }
+  
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; margin: 2px; }
+  .tag-blue { background: #EBF5FB; color: #2B5797; }
+  .tag-green { background: #EAFAF1; color: #27AE60; }
+  .tag-red { background: #FDEDEC; color: #C0392B; }
+  .tag-yellow { background: #FEF9E7; color: #E67E22; }
+  
+  .arch { background: #1e1e2e; border-radius: 8px; padding: 20px; margin: 14px 0; }
+  .arch-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 6px 0; flex-wrap: wrap; }
+  .arch-box { background: #313244; color: #cdd6f4; padding: 6px 14px; border-radius: 6px; font-size: 12px; font-family: Consolas, monospace; white-space: nowrap; }
+  .arch-box.blue { background: #1d3461; color: #89b4fa; }
+  .arch-box.green { background: #1e3a2f; color: #a6e3a1; }
+  .arch-box.purple { background: #2d1e44; color: #cba6f7; }
+  .arch-box.orange { background: #3d2b1f; color: #fab387; }
+  .arch-arrow { color: #6c7086; font-size: 18px; }
+  
+  .file-tree { background: #f8f9fa; border-radius: 8px; padding: 16px; font-family: Consolas, monospace; font-size: 13px; line-height: 1.8; margin: 10px 0; }
+  .file-tree .dir { color: #2B5797; font-weight: 600; }
+  .file-tree .file { color: #555; }
+  .file-tree .comment { color: #999; font-size: 11px; margin-left: 6px; }
+  
+  ul.steps { padding-left: 20px; }
+  ul.steps li { margin-bottom: 8px; font-size: 14px; }
+  
+  .tip-box { background: #FEF9E7; border: 1px solid #F9E79F; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 13px; }
+  .tip-box.info { background: #EBF5FB; border-color: #AED6F1; }
+  .tip-box.danger { background: #FDEDEC; border-color: #F5B7B1; }
+  .tip-box.ok { background: #EAFAF1; border-color: #A9DFBF; }
+  
+  .secrets-table th:first-child { width: 200px; }
+  
+  footer { text-align: center; padding: 24px; color: #888; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<div class="hero">
+  <h1>🤖 招聘信息采集系统 · 部署指南</h1>
+  <p>腾讯云 SCF + GitHub Actions + Kimi AI · 每日09:00全自动运行</p>
+</div>
+
+<div class="container">
+
+  <!-- 架构概览 -->
+  <div class="step-card success">
+    <div class="step-header">
+      <div class="step-num success">✦</div>
+      <div class="step-title success">系统架构总览</div>
+    </div>
+    <div class="arch">
+      <div class="arch-row">
+        <div class="arch-box blue">GitHub Actions<br><small>定时 09:00 触发</small></div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box green">腾讯云 SCF<br><small>国内IP 采集+AI分析</small></div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box purple">Kimi API<br><small>岗位提取+打分</small></div>
+      </div>
+      <div class="arch-row" style="margin-top:12px">
+        <div class="arch-box" style="font-size:11px; color:#6c7086">↓ 返回JSON结果</div>
+      </div>
+      <div class="arch-row">
+        <div class="arch-box blue">GitHub Actions<br><small>生成Excel</small></div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-box">GitHub Release<br><small>文件托管</small></div>
+        <div class="arch-arrow">+</div>
+        <div class="arch-box orange">Server酱<br><small>微信推送</small></div>
+      </div>
+    </div>
+    <p style="font-size:13px; color:#555; margin-top:8px">💡 关键设计：GitHub Actions（美国IP）仅负责调度，真正的网络请求全部在 SCF（国内IP）执行</p>
+  </div>
+
+  <!-- 文件结构 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">0</div>
+      <div class="step-title">项目文件结构</div>
+    </div>
+    <div class="file-tree">
+      <div><span class="dir">job-collector/</span></div>
+      <div>&nbsp;&nbsp;<span class="dir">.github/workflows/</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">daily_job.yml</span><span class="comment">GitHub Actions 定时任务</span></div>
+      <div>&nbsp;&nbsp;<span class="dir">scf_function/</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">index.py</span><span class="comment">SCF主体：采集+AI分析（运行在国内）</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">requirements.txt</span><span class="comment">SCF依赖库</span></div>
+      <div>&nbsp;&nbsp;<span class="dir">scripts/</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">run.py</span><span class="comment">GitHub Actions执行脚本：生成Excel+推送</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">test_local.py</span><span class="comment">本地调试工具（模拟数据测试）</span></div>
+      <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="file">pack_scf.sh</span><span class="comment">打包SCF代码的脚本</span></div>
+      <div>&nbsp;&nbsp;<span class="file">requirements.txt</span><span class="comment">GitHub Actions端的依赖</span></div>
+      <div>&nbsp;&nbsp;<span class="file">README.md</span><span class="comment">详细文档</span></div>
+    </div>
+  </div>
+
+  <!-- Step 1 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">1</div>
+      <div class="step-title">创建腾讯云 SCF 函数（~15分钟）</div>
+    </div>
+    <ul class="steps">
+      <li>登录 <a href="https://console.cloud.tencent.com/scf" target="_blank">腾讯云 SCF 控制台</a>，开通服务（免费）</li>
+      <li>新建函数：
+        <table style="margin:8px 0">
+          <tr><th>配置项</th><th>值</th></tr>
+          <tr><td>函数名称</td><td><code>job-collector</code></td></tr>
+          <tr><td>地域</td><td>华北地区（北京）</td></tr>
+          <tr><td>运行环境</td><td>Python 3.9</td></tr>
+          <tr><td>执行方法</td><td><code>index.main_handler</code></td></tr>
+          <tr><td>内存</td><td>512 MB</td></tr>
+          <tr><td><strong>超时时间</strong></td><td><strong>600 秒</strong>（必须设最大值）</td></tr>
+        </table>
+      </li>
+      <li>添加环境变量：<code>KIMI_API_KEY</code> = 你的 Kimi API Key</li>
+      <li>打包上传代码：
+        <pre><span class="c"># 在项目根目录执行</span>
+bash scripts/pack_scf.sh
+<span class="c"># 生成 job-collector-scf.zip，上传到控制台</span></pre>
+      </li>
+      <li>添加 <strong>API网关触发器</strong>，认证方式选「<strong>API密钥认证</strong>」</li>
+      <li>记录触发器生成的 URL（下一步用到）</li>
+    </ul>
+    <div class="tip-box info">
+      📌 SCF 每月免费额度：100万次调用 + 40万GB·s 计算，每天1次完全免费。
+    </div>
+  </div>
+
+  <!-- Step 2 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">2</div>
+      <div class="step-title">配置 GitHub Secrets</div>
+    </div>
+    <p style="font-size:14px; margin-bottom:10px">进入 GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret</p>
+    <table class="secrets-table">
+      <tr><th>Secret 名称</th><th>值</th><th>说明</th></tr>
+      <tr>
+        <td><code>SCF_URL</code></td>
+        <td>SCF API网关触发器URL</td>
+        <td>从腾讯云控制台复制</td>
+      </tr>
+      <tr>
+        <td><code>SERVERCHAN_KEY</code></td>
+        <td>你的 SendKey（SCTxxxxxxx...）</td>
+        <td>Server酱推送微信</td>
+      </tr>
+    </table>
+    <div class="tip-box ok" style="margin-top:10px">
+      ✅ <code>GITHUB_TOKEN</code> 不需要手动设置，Actions 会自动注入。
+    </div>
+  </div>
+
+  <!-- Step 3 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">3</div>
+      <div class="step-title">推送代码到 GitHub</div>
+    </div>
+    <pre><span class="c"># 将 job-collector/ 目录推送到你的 GitHub 仓库</span>
+cd job-collector/
+git init
+git add .
+git commit -m <span class="s">"feat: 招聘采集系统初始化"</span>
+git remote add origin https://github.com/你的用户名/你的仓库.git
+git push -u origin main</pre>
+  </div>
+
+  <!-- Step 4 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">4</div>
+      <div class="step-title">测试运行</div>
+    </div>
+    <ul class="steps">
+      <li>进入 GitHub 仓库 → <strong>Actions</strong> 标签页</li>
+      <li>找到「每日招聘采集」workflow</li>
+      <li>点击 <strong>Run workflow</strong>（手动触发测试）</li>
+      <li>查看日志，预期输出：
+        <pre><span class="c">📡 调用 SCF 云函数...</span>
+<span class="n">✅ SCF 返回：28 篇文章，12 个有效岗位</span>
+<span class="n">✅ Excel 已生成：/tmp/招聘汇总_2026-05-27.xlsx（12 行）</span>
+<span class="n">✅ 文件已上传：https://github.com/.../releases/download/...</span>
+<span class="n">✅ 微信推送成功</span>
+<span class="n">✅ 全流程完成！共处理 12 个岗位</span></pre>
+      </li>
+    </ul>
+  </div>
+
+  <!-- 筛选说明 -->
+  <div class="step-card warn">
+    <div class="step-header">
+      <div class="step-num warn">!</div>
+      <div class="step-title warn">筛选规则与打分说明</div>
+    </div>
+    <table>
+      <tr><th>加减分项</th><th>分值</th><th>备注</th></tr>
+      <tr><td>工作地点：太原/吕梁/山西</td><td style="color:#27AE60">+30</td><td>AI从正文提取</td></tr>
+      <tr><td>岗位类型匹配（行政/运营/管理等）</td><td style="color:#27AE60">+20</td><td>语义匹配</td></tr>
+      <tr><td>国企/央企/事业单位</td><td style="color:#27AE60">+20</td><td>语义识别</td></tr>
+      <tr><td>有明确薪资</td><td style="color:#27AE60">+10</td><td></td></tr>
+      <tr><td>有明确截止日期</td><td style="color:#27AE60">+10</td><td></td></tr>
+      <tr><td>含排除关键词（实习/劳务派遣等）</td><td style="color:#C0392B">-100</td><td>直接丢弃</td></tr>
+    </table>
+    <p style="font-size:13px; margin-top:10px">
+      <span class="tag tag-green">✅ 优先投递</span> 80分及以上 &nbsp;
+      <span class="tag tag-yellow">⚠️ 待复核</span> 50-79分 &nbsp;
+      <span class="tag tag-red">不导出</span> 50分以下
+    </p>
+  </div>
+
+  <!-- 常见问题 -->
+  <div class="step-card">
+    <div class="step-header">
+      <div class="step-num">?</div>
+      <div class="step-title">常见问题 & 调优建议</div>
+    </div>
+    <table>
+      <tr><th>问题</th><th>解决方案</th></tr>
+      <tr>
+        <td>SCF 函数超时</td>
+        <td>减少公众号数量，或把微信采集和网站采集分成两个 SCF 函数</td>
+      </tr>
+      <tr>
+        <td>搜狗返回验证码</td>
+        <td>增加 <code>time.sleep</code> 间隔（8-15秒），腾讯云北京IP一般不被封</td>
+      </tr>
+      <tr>
+        <td>Kimi 余额不足</td>
+        <td>改用 <code>moonshot-v1-8k</code> 更便宜，或把AI分析移到 GitHub Actions 端</td>
+      </tr>
+      <tr>
+        <td>网站改版后采集为空</td>
+        <td>更新 <code>scf_function/index.py</code> 中对应采集函数的 CSS 选择器</td>
+      </tr>
+      <tr>
+        <td>Excel 下载需要登录</td>
+        <td>将 GitHub 仓库设为 Public，或在 Actions Artifacts 下载</td>
+      </tr>
+    </table>
+  </div>
+
+  <footer>
+    代码生成时间：2026-05-27 · 架构：SCF + GitHub Actions + Kimi + Server酱
+  </footer>
+
+</div>
+</body>
+</html>
